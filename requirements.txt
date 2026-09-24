@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+python-multipart
+pydantic-settings
+chromadb
+pypdf
+filetype
+tiktoken
+openai
+sentence-transformers
