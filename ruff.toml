@@ -1,0 +1,2 @@
+[lint.per-file-ignores]
+"app/upload.py" = ["B008"]   # FastAPI's File/Depends pattern requires call-in-default

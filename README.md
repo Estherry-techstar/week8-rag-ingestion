@@ -211,3 +211,21 @@ retrieved chunk carries its provenance.
 - No authentication; intended for local development only.
 - The comparison rests on a single slide-based document. Prose documents would test the
   strategies more sharply.
+
+  ## Tests
+
+```bash
+pip install -r requirements-dev.txt
+ruff check app tests
+pytest -v
+```
+
+14 tests covering upload validation (disguised files, oversized files, empty files,
+unsupported extensions, filename sanitisation) and chunking invariants (target sizes
+respected, overlap present, page numbers preserved, sub-threshold chunks filtered,
+sequential indexes). Linting and tests run automatically on every push via GitHub Actions.
+
+Ruff's `B023` check caught a latent bug in the structure-aware chunker: a closure captured
+the loop's `page` variable rather than its value, which would have produced wrong page
+numbers in citations if the flush had ever been deferred. Fixed by extracting the per-page
+work into its own function so the page is a proper parameter.

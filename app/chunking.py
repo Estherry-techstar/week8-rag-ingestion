@@ -98,6 +98,42 @@ def _split_units(text: str, max_tokens: int) -> list[str]:
     return units
 
 
+def _pack_page(page: dict, size: int) -> list[dict]:
+    """Pack one page's units into chunks no larger than `size` tokens.
+
+    Handling a single page per call keeps the page number bound to this
+    call's arguments, rather than to a loop variable in an enclosing scope.
+    """
+    chunks: list[dict] = []
+    buffer: list[str] = []
+    buffer_tokens = 0
+
+    def flush() -> None:
+        nonlocal buffer, buffer_tokens
+        if buffer:
+            text = "\n\n".join(buffer)
+            chunks.append(
+                {
+                    "text": text,
+                    "page": page["page"],
+                    "token_count": count_tokens(text),
+                    "strategy": "structure_aware",
+                }
+            )
+        buffer = []
+        buffer_tokens = 0
+
+    for unit in _split_units(page["text"], size):
+        unit_tokens = count_tokens(unit)
+        if buffer and buffer_tokens + unit_tokens > size:
+            flush()
+        buffer.append(unit)
+        buffer_tokens += unit_tokens
+
+    flush()
+    return chunks
+
+
 def structure_aware_chunks(
     pages: list[dict],
     chunk_tokens: int | None = None,
@@ -105,34 +141,9 @@ def structure_aware_chunks(
     """Pack whole paragraphs/sentences up to the target size, never cutting
     through the middle of one."""
     size = chunk_tokens or settings.chunk_tokens
+
     chunks: list[dict] = []
-
     for page in pages:
-        buffer: list[str] = []
-        buffer_tokens = 0
-
-        def flush():
-            nonlocal buffer, buffer_tokens
-            if buffer:
-                text = "\n\n".join(buffer)
-                chunks.append(
-                    {
-                        "text": text,
-                        "page": page["page"],
-                        "token_count": count_tokens(text),
-                        "strategy": "structure_aware",
-                    }
-                )
-            buffer = []
-            buffer_tokens = 0
-
-        for unit in _split_units(page["text"], size):
-            unit_tokens = count_tokens(unit)
-            if buffer and buffer_tokens + unit_tokens > size:
-                flush()
-            buffer.append(unit)
-            buffer_tokens += unit_tokens
-
-        flush()
+        chunks.extend(_pack_page(page, size))
 
     return _finalise(chunks)
