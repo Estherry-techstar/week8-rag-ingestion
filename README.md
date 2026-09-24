@@ -107,49 +107,87 @@ stored, and occasionally retrieved. Filtering left 43 genuine chunks.
 
 ## Comparison results
 
-**Document:** PHY121 Module One, Units 1–4 (lecture slides, 3.4 MB, 71 pages)
-**Target chunk size:** 400 tokens
+Two documents were ingested and chunked with both strategies:
 
-| Strategy | Chunks | Avg tokens | Min | Max |
+| Document | Type | Pages | Avg tokens/page |
+|---|---|---|---|
+| PHY121 Module One, Units 1–4 | Lecture slides | 71 | ~70 |
+| MS Learn — RAG in Azure AI Search | Prose article | 8 | ~292 |
+
+### Run 1 — 400-token target
+
+| Document | Strategy | Chunks | Avg | Min | Max |
+|---|---|---|---|---|---|
+| PHY121 slides | Fixed-size (400/60) | 43 | 70.9 | 20 | 229 |
+| PHY121 slides | Structure-aware (400) | 43 | 70.9 | 20 | 229 |
+| MS Learn RAG | Fixed-size (400/60) | 7 | 292.3 | 226 | 375 |
+| MS Learn RAG | Structure-aware (400) | 7 | 292.3 | 226 | 375 |
+
+**Both strategies produced byte-identical output on both documents.** Retrieval confirmed
+this: the query *"what is quantization of charge"* returned the same three chunks in the same
+order with identical similarity scores (0.7245, 0.5423, 0.5321) under either strategy.
+
+The cause is the same in both cases. Every page in both documents was smaller than the
+400-token target — 70 tokens per slide, 292 per article page, against a 400-token ceiling.
+Since chunking is applied per page, neither strategy ever had to choose a split point within
+a page. Fixed-size never made a second cut, so its overlap never triggered; structure-aware
+simply packed each whole page into one chunk. Both degenerated to "one chunk per page."
+
+### Run 2 — 150-token target (same MS Learn document)
+
+Lowering the target below the page size (226–375 tokens) forces both strategies to split
+*within* pages, which is the condition under which they can actually differ.
+
+| Strategy | Chunks | Avg | Min | Max |
 |---|---|---|---|---|
-| Fixed-size (400/60) | 43 | 70.9 | 20 | 229 |
-| Structure-aware (400) | 43 | 70.9 | 20 | 229 |
+| Fixed-size (150/60) | 22 | 133.9 | 75 | 150 |
+| Structure-aware (150) | 17 | 119.8 | 24 | 149 |
 
-### Retrieval test
+**Size distribution.** Fixed-size clusters tightly against its 150-token ceiling (14 of 22
+chunks sit at exactly 150). Structure-aware ranges from 24 to 149, because it stops wherever
+a paragraph ends rather than padding to a target.
 
-Query: *"what is quantization of charge"*
+**Chunk count.** Fixed-size produced 22 chunks against structure-aware's 17 — 29% more — for
+identical source content. The extra volume is the 60-token overlap duplicated across every
+boundary, which inflates both the vector store and the candidate set at query time.
 
-| Rank | Page | Similarity | Fixed-size | Structure-aware |
-|---|---|---|---|---|
-| 1 | 13 | 0.7245 | Quantization of Charge (q = ne) | identical |
-| 2 | 12 | 0.5423 | Properties of charges | identical |
-| 3 | 6 | 0.5321 | Electrostatics introduction | identical |
+**Boundary quality.** This is where the strategies differ most. Every structure-aware chunk
+begins at a heading or sentence start. Fixed-size chunks frequently begin mid-thought:
 
-Both strategies returned the same chunks in the same order with identical similarity
-scores.
+| Chunk | Fixed-size opening | Problem |
+|---|---|---|
+| 1 | `document terminology. For RAG, an information...` | Orphaned from its subject |
+| 7 | `image verbalization, and analysis.` | Starts mid-list |
+| 13 | `the queryable object that unifies those sources...` | Begins on "the" |
+| 16 | `: Use knowledge sources that auto-generate...` | Begins on a colon |
+| 21 | `AG with knowledge retrieval and Azure AI Search` | **"RAG" split mid-acronym** |
+
+Chunk 21 is the clearest failure: the token boundary fell inside the word "RAG", leaving a
+chunk that opens with "AG". Embedded as-is, that chunk's opening carries no meaning, and if
+retrieved it would be shown to a user or an LLM in that broken state.
 
 ### Which produced more useful chunks, and why
 
-**On this document, neither — and the reason is the interesting part.**
+**Structure-aware, but only when the target chunk size is smaller than the document's natural
+unit size.**
 
-Every page of a lecture-slide deck holds only a handful of bullet points, averaging about 70
-tokens. Since the 400-token target exceeds nearly every page, fixed-size chunking never
-needs to make a second cut within a page, and its overlap never triggers. Structure-aware
-chunking, meanwhile, simply packs the whole page into one chunk. **Both strategies degenerate
-to "one chunk per page,"** producing byte-identical output and therefore identical retrieval.
+At a 400-token target the two strategies were indistinguishable on both documents, because
+the page structure had already done the chunking. At 150 tokens structure-aware was clearly
+better: 29% fewer chunks to store and search, and every chunk a self-contained passage rather
+than an arbitrary token window.
 
-The general principle: **chunking strategy only matters when the document's natural units are
-larger than the target chunk size.** Where a page already fits inside one chunk, the
-document's own structure has done the chunking, and the strategy is irrelevant.
+The general rule this establishes: **chunking strategy only matters when chunks must be cut
+within a document's natural units.** Where pages, sections, or slides already fit inside the
+target size, the document's own structure determines the chunks and the strategy is
+irrelevant. This is worth knowing before investing in a sophisticated splitter — the first
+question should be how the target size compares to the source's natural unit size.
 
-This predicts where the strategies *would* diverge: dense prose with pages well over 400
-tokens, or the same slides with a much smaller target size. Both are the obvious next
-experiments.
-
-Retrieval quality itself was good regardless of strategy. The top hit for the test query was
-the exact slide defining quantization, including the formula, cited correctly to page 13.
-
----
+Structure-aware is not free of trade-offs. Chunk 11 came out at just 24 tokens because a short
+section ended and the packer declined to pad it with unrelated material from the next section.
+That chunk is coherent but thin, and may be too sparse to retrieve well. Fixed-size would have
+merged it with its neighbour, producing a fuller but less focused chunk. Fixed-size also
+retains one genuine advantage: its overlap means a fact sitting on a boundary appears intact
+in at least one chunk, whereas structure-aware relies on its boundaries being good ones.
 
 ## Vector store choice
 
@@ -203,16 +241,7 @@ retrieved chunk carries its provenance.
 
 ---
 
-## Known limitations
-
-- Scanned PDFs are rejected rather than OCR'd.
-- Chunking never spans page boundaries, so cross-page paragraphs are split.
-- Sentence splitting is regex-based and mishandles abbreviations such as "Fig. 3".
-- No authentication; intended for local development only.
-- The comparison rests on a single slide-based document. Prose documents would test the
-  strategies more sharply.
-
-  ## Tests
+## Tests
 
 ```bash
 pip install -r requirements-dev.txt
@@ -222,10 +251,21 @@ pytest -v
 
 14 tests covering upload validation (disguised files, oversized files, empty files,
 unsupported extensions, filename sanitisation) and chunking invariants (target sizes
-respected, overlap present, page numbers preserved, sub-threshold chunks filtered,
-sequential indexes). Linting and tests run automatically on every push via GitHub Actions.
+respected, overlap present, page numbers preserved, sub-threshold chunks filtered, sequential
+indexes). Linting and tests run on every push via GitHub Actions.
 
-Ruff's `B023` check caught a latent bug in the structure-aware chunker: a closure captured
-the loop's `page` variable rather than its value, which would have produced wrong page
-numbers in citations if the flush had ever been deferred. Fixed by extracting the per-page
-work into its own function so the page is a proper parameter.
+Ruff's `B023` check caught a latent bug in the structure-aware chunker: a closure captured the
+loop's `page` variable rather than its value, which would have written wrong page numbers into
+citations had the flush ever been deferred. Fixed by extracting the per-page work into its own
+function so the page became a proper parameter, rather than suppressing the warning.
+
+---
+
+## Known limitations
+
+- Scanned PDFs are rejected rather than OCR'd.
+- Chunking never spans page boundaries, so cross-page paragraphs are split.
+- Sentence splitting is regex-based and mishandles abbreviations such as "Fig. 3".
+- No authentication; intended for local development only.
+- The comparison covers two documents. A larger and more varied corpus would test the
+  strategies further, particularly documents with deep heading hierarchies.
